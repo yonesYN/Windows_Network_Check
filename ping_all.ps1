@@ -20,7 +20,7 @@ function PingServer {
 
 		$cr = if ($pingTime -gt 240) { 
 			'[33m'
-		} elseif ($PPing -and [Math]::Abs($pingTime - $PPing) -gt 19) {
+		} elseif ($PPing -and [Math]::Abs($pingTime - $PPing) -gt 15) {
 			'[93m'
 		} else { '[0m' }
 
