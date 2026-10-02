@@ -2,7 +2,7 @@
 .NOTES
     Author         : yonesYN
     GitHub         : https://github.com/yonesYN
-    Version        : 1.2
+    Version        : 1.3
 #>
 
 $gg = [bool](whoami /groups | findstr "S-1-5-32-544")
@@ -18,7 +18,22 @@ switch -Wildcard ($agroup.ToString()) {
     Default          { $ll = "Unknown" }
 }
 
+function Test-Mtu {
+    param(
+        [int]$Size
+    )
+
+    & ping.exe -n 1 -f -l $Size 8.8.8.8 *> $null
+
+    return ($LASTEXITCODE -eq 0)
+}
+
 $services = @{
+    'lltdio' = $true
+    'MsLldp' = $true
+    'NdisCap' = $true
+    'Psched' = $true
+    'rspndr' = $true
     'nsi' = $true
     'RpcSs' = $true
     'PlugPlay' = $true
@@ -37,17 +52,26 @@ $services = @{
     'W32Time' = $false
 }
 
+Write-Host "`n=== Related Software ===" -ForegroundColor Cyan
+Get-ItemProperty @(
+    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+) -ErrorAction SilentlyContinue | Where-Object {
+    $_.DisplayName -match 'tunnel|vpn|proxy|wall|packet|ping|net|connect|tun|tap'
+} | ForEach-Object {
+    [PSCustomObject]@{
+        Name = $_.DisplayName
+        Location = if ($_.InstallLocation) {
+            $_.InstallLocation
+        } else {
+            $_.InstallationPath
+        }
+    }
+} | Out-Host
 
-Write-Host "`n=== GENERAL ===" -ForegroundColor Cyan
-$robo = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName -like "*Roboping*" | Select-Object -ExpandProperty InstallLocation
-
-if ($robo) {
-    Write-Host "$robo"
-} else {
-    Write-Host "Not found" -ForegroundColor red
-}
-
-Write-Host "`nAdminGroup: $gg" -ForegroundColor $(if ($gg) { "Green" } else { "Red" })
+Write-Host "`n=== UAC ===" -ForegroundColor Cyan
+Write-Host "AdminGroup: $gg" -ForegroundColor $(if ($gg) { "Green" } else { "Red" })
 Write-Host "elevated: $ee"
 Write-Host "Level: $ll"
 
@@ -69,15 +93,25 @@ if ($adapters) {
     Write-Host "No adapters found" -ForegroundColor Red
 }
 
-Write-Host "`n=== Public-IP ===" -ForegroundColor Cyan
+Write-Host "`n=== Public-IP & Time ===" -ForegroundColor Cyan
 try {
-    $trace = Invoke-WebRequest "https://cloudflare.com/cdn-cgi/trace" -UseBasicParsing
+    $trace = Invoke-WebRequest "https://cloudflare.com/cdn-cgi/trace" -UseBasicParsing -ErrorAction Stop
     $data = ConvertFrom-StringData $trace.Content
-    $loc = if ($data.loc) { $data.loc } else { "Unknown" }
-    $color = if ($data.loc -eq "IR") { "Green" } else { "Yellow" }
-    Write-Host "IP: $($data.ip) $loc" -ForegroundColor $color
 } catch {
     Write-Host "Unable to retrieve"
+}
+
+if ($data) {
+	$unix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $loc = if ($data.loc) { $data.loc } else { "Unknown" }
+    Write-Host "IP: $($data.ip) $loc"
+}
+
+if ($data.ts -match '^\d+(\.\d+)?$') {
+    $unix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $differ = [math]::Abs([long]$data.ts - $unix)
+    $color = if ($differ -gt 60) { "Yellow" } else { "Green" }
+    Write-Host "Time Difference: $differ seconds" -ForegroundColor $color
 }
 
 Write-Host "`n=== DNS SETTINGS ===" -ForegroundColor Cyan
@@ -98,29 +132,79 @@ try {
     Write-Host "`nDNS: Failed" -ForegroundColor Red
 }
 
-Write-Host "`n=== NETWORK LATENCY ===" -ForegroundColor Cyan
-
+Write-Host "`n=== LATENCY & MTU ===" -ForegroundColor Cyan
+Write-Host "8.8.8.8"
+$pingResults = @()
+$a = 0
 try {
-    Test-Connection 4.2.2.4 -Count 1 -ErrorAction Stop | Out-Null
-    $pingResults = Test-Connection 4.2.2.4 -Count 9 -Delay 1 -ErrorAction SilentlyContinue
+    Test-Connection 8.8.8.8 -Count 1 -ErrorAction SilentlyContinue | Out-Null
+    $a = 1
 } catch {
     Write-Host "Unable to test" -ForegroundColor Red
 }
 
-$successPings = @($pingResults | Where-Object { $_.ResponseTime -ne $null })
-if ($successPings.Count -eq 0) {
-    Write-Host "Timeout" -ForegroundColor Red
-} else {
-    $avgPing = [math]::Round(($successPings.ResponseTime | Measure-Object -Average).Average)
-    $maxPing = ($successPings.ResponseTime | Measure-Object -Maximum).Maximum
-    $differ = [math]::Abs($avgPing - $maxPing)
-    $color = if ($successPings.Count -lt 9) { "Red" } elseif ($maxPing -gt 250 -or $differ -gt 19) { "Yellow" } else { "Green" }
+if ($a) {
+    Write-Host " Loading: " -NoNewline
 
-    Write-Host "latency: ${avgPing}ms  $differ" -ForegroundColor $color
+    for ($i = 0; $i -lt 9; $i++) {
+
+        $ping = Test-Connection 8.8.8.8 -Count 1 -ErrorAction SilentlyContinue
+
+        if ($ping) {
+            $pingResults += $ping
+            $currentPing = $ping.ResponseTime
+            $differ = [math]::Abs($currentPing - $previousPing)
+
+            $color = if ($currentPing -gt 240 -or $differ -ge 9) {"Yellow"} else {"Green"}
+            Write-Host "#" -NoNewline -ForegroundColor $color
+
+            $previousPing = $currentPing
+        }
+        else {
+            Write-Host "#" -NoNewline -ForegroundColor Red
+        }
+    }
+
+    $successPings = @($pingResults | Where-Object { $_.ResponseTime -ne $null })
+    if ($successPings.Count -eq 0) {
+        Write-Host " Timeout" -ForegroundColor Red
+    } else {
+        $avgPing = [math]::Round(($successPings.ResponseTime | Measure-Object -Average).Average)
+        $maxPing = ($successPings.ResponseTime | Measure-Object -Maximum).Maximum
+        $differ = [math]::Abs($avgPing - $maxPing)
+    
+        Write-Host "`n   latency: ${avgPing}ms  Jitter: ${differ}ms  Success: $($successPings.Count)/9"
+    }
 }
+
+Write-Host "`n Loading: " -NoNewline
+
+$low = 8
+$high = 1472
+$load = -1
+
+if ($successPings.Count -eq 9 -and $maxPing -lt 270) { while ($low -le $high) {
+    $mid = [math]::Floor(($low + $high) / 2)
+
+    if (Test-Mtu -Size $mid) {
+        Write-Host "#" -NoNewline -ForegroundColor Green
+        $load = $mid
+        $low = $mid + 1
+    }
+    else {
+        Write-Host "#" -NoNewline -ForegroundColor Yellow
+        $high = $mid - 1
+    }
+}
+    if ($load -ge 0) {
+        Write-Host "`n   MTU: $($load+28)"
+    } else { Write-Host "Unable to determine the Path MTU" -ForegroundColor Red }
+} else { Write-Host "The connection is unstable for the MTU test" -ForegroundColor Yellow}
 
 Write-Host "`n=== PROXY STATUS ===" -ForegroundColor Cyan
 netsh winhttp show proxy
+$Proxy = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" | Select-Object ProxyEnable,ProxyServer
+if ($Proxy.ProxyEnable) { Write-Host "ProxyEnable: $($Proxy.ProxyServer)" }
 
 Write-Host "`n=== DEFENDER STATUS ===" -ForegroundColor Cyan
 if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
@@ -180,5 +264,5 @@ if (Test-Path $path) {
     Write-Host "Hosts file not found" -ForegroundColor Red
 }
 
-Get-NetFirewallProfile | Select-Object Name, Enabled
+Get-NetFirewallProfile | Select-Object Name, Enabled | Out-Host
 pause
